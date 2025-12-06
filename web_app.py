@@ -12,8 +12,8 @@ if sys.version_info < (3, 10):
     sys.exit(1)
 
 try:
-    from fastapi import FastAPI, Form, HTTPException
-    from fastapi.responses import FileResponse, HTMLResponse
+    from fastapi import FastAPI, Form, HTTPException, Cookie, Response
+    from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
     from fastapi.staticfiles import StaticFiles
 
     from learn_in_sleep_tts.tts_engine import synthesize_to_wav
@@ -29,11 +29,149 @@ except ImportError as e:
 
 app = FastAPI(title="Learn in Sleep TTS")
 
+# Password for authentication
+PASSWORD = "guriaforever"
+
+
+def check_auth(authenticated: str = Cookie(default="")):
+    """Check if user is authenticated."""
+    return authenticated == "true"
+
 
 @app.get("/", response_class=HTMLResponse)
-async def index():
-    """Serve the main HTML form."""
-    html_content = """
+async def index(authenticated: str = Cookie(default="")):
+    """Show login page if not authenticated, otherwise show TTS form."""
+    if authenticated != "true":
+        return login_page()
+    return tts_form()
+
+
+def login_page():
+    """Return the login page HTML."""
+    return HTMLResponse(content="""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Login - Learn in Sleep TTS</title>
+        <style>
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                max-width: 400px;
+                margin: 100px auto;
+                padding: 20px;
+                background-color: #f5f5f5;
+            }
+            .container {
+                background: white;
+                padding: 40px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }
+            h1 {
+                color: #333;
+                margin-top: 0;
+                text-align: center;
+            }
+            label {
+                display: block;
+                margin-top: 20px;
+                margin-bottom: 5px;
+                font-weight: 600;
+                color: #555;
+            }
+            input[type="password"] {
+                width: 100%;
+                padding: 12px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                font-size: 14px;
+                box-sizing: border-box;
+            }
+            button {
+                width: 100%;
+                background-color: #007bff;
+                color: white;
+                padding: 12px 24px;
+                border: none;
+                border-radius: 4px;
+                font-size: 16px;
+                cursor: pointer;
+                margin-top: 20px;
+                transition: background-color 0.2s;
+            }
+            button:hover {
+                background-color: #0056b3;
+            }
+            .error {
+                margin-top: 15px;
+                padding: 10px;
+                background-color: #ffe7e7;
+                border-left: 4px solid #dc3545;
+                border-radius: 4px;
+                font-size: 14px;
+                color: #721c24;
+                display: none;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🔒 Login</h1>
+            <p style="text-align: center; color: #666;">Enter password to access TTS</p>
+            
+            <form id="loginForm" method="post" action="/login">
+                <label for="password">Password:</label>
+                <input type="password" id="password" name="password" required autofocus>
+                
+                <button type="submit">Login</button>
+            </form>
+            
+            <div id="error" class="error"></div>
+        </div>
+        
+        <script>
+            const form = document.getElementById('loginForm');
+            const errorDiv = document.getElementById('error');
+            
+            // Check for error in URL
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get('error') === '1') {
+                errorDiv.style.display = 'block';
+                errorDiv.textContent = 'Invalid password. Please try again.';
+            }
+            
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const formData = new FormData(form);
+                
+                try {
+                    const response = await fetch('/login', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (response.ok) {
+                        window.location.href = '/';
+                    } else {
+                        errorDiv.style.display = 'block';
+                        errorDiv.textContent = 'Invalid password. Please try again.';
+                    }
+                } catch (error) {
+                    errorDiv.style.display = 'block';
+                    errorDiv.textContent = 'Error: ' + error.message;
+                }
+            });
+        </script>
+    </body>
+    </html>
+    """)
+
+
+def tts_form():
+    """Return the TTS form HTML."""
+    return HTMLResponse(content="""
     <!DOCTYPE html>
     <html lang="en">
     <head>
@@ -124,7 +262,10 @@ async def index():
     </head>
     <body>
         <div class="container">
-            <h1>🎙️ Learn in Sleep TTS</h1>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <h1 style="margin: 0;">🎙️ Learn in Sleep TTS</h1>
+                <a href="/logout" style="color: #666; text-decoration: none; font-size: 14px;">🚪 Logout</a>
+            </div>
             <p>Enter text below to generate a voice file using Coqui TTS.</p>
             
             <form id="ttsForm" method="post" action="/synthesize">
@@ -199,12 +340,30 @@ async def index():
         </script>
     </body>
     </html>
-    """
-    return HTMLResponse(content=html_content)
+    """)
+
+
+@app.post("/login")
+async def login(password: str = Form(...)):
+    """Handle login and set authentication cookie."""
+    if password == PASSWORD:
+        response = RedirectResponse(url="/", status_code=303)
+        response.set_cookie(key="authenticated", value="true", httponly=True, max_age=86400)  # 24 hours
+        return response
+    else:
+        return RedirectResponse(url="/?error=1", status_code=303)
+
+
+@app.get("/logout")
+async def logout():
+    """Logout and clear authentication cookie."""
+    response = RedirectResponse(url="/", status_code=303)
+    response.delete_cookie(key="authenticated")
+    return response
 
 
 @app.post("/synthesize")
-async def synthesize(text: str = Form(...), filename: str = Form("output.wav"), speaker: str = Form(None)):
+async def synthesize(text: str = Form(...), filename: str = Form("output.wav"), speaker: str = Form(None), authenticated: str = Cookie(default="")):
     """
     Synthesize text to speech and return the WAV file.
     
@@ -216,6 +375,10 @@ async def synthesize(text: str = Form(...), filename: str = Form("output.wav"), 
     Returns:
         WAV file as FileResponse
     """
+    # Check authentication
+    if authenticated != "true":
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
     if not text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")
     
